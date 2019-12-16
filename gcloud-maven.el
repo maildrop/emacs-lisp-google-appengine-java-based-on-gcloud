@@ -1,6 +1,6 @@
-;;; gcloud-cloud-datastore.el --- gcloud-cloud-datastore-emulator の起動と停止を行う elisp
+;;; gcloud-maven.el --- gcloud-maven のユーティリティ環境  -*- coding: utf-8 ; lexical-binding: t ;-*-
 
-;; Copyright (C) 2019 by 精廬幹人
+;; Copyright (C) 2019 by TOGURO Mikito
 
 ;; Author: TOGURO Mikito <mit@shalab.net>
 ;; URL: リポジトリの URL等
@@ -19,7 +19,6 @@
 (defvar gcloud-maven-command-name "mvn")
 (defvar gcloud-maven-appengine-buffer-name "*gcloud-maven-appengine-buffer*")
 (defvar gcloud-maven-appengine-process-name "gcloud-maven-appengine-process")
-
 
 (defun gcloud-maven-find-root ()
   "maven の root ディレクトリを探す"
@@ -64,17 +63,35 @@
       t
     nil))
 
-(defun gcloud-maven-appengine-stop ()
+(defun gcloud-maven-appengine-stop-impl (&optional arg-finished-proc)
   ""
+  (remove-hook 'kill-emacs-hook 'gcloud-maven-appengine-stop); まず global hook を外す
+  (let ( (the-process (get-process gcloud-maven-appengine-process-name)) )
+    (when the-process ;; プロセスがまだあるよ
+      (when (gcloud-maven-appengine-still-alivep)
+        (when arg-finished-proc
+          (set-process-sentinel the-process ((lambda (finished-proc)
+                                               (lambda (process event)
+                                                 (cond ( (string-equal "finished\n" event )
+                                                         (message "finished") )
+                                                       ( (string-equal "deleted\n" event )
+                                                         (message "deleted") )
+                                                       ( (string-equal "exited abnormally with code 255\n" event)
+                                                         (funcall finished-proc)))))
+                                             arg-finished-proc)))
+        ;; 準備が整ったのでプロセスにシグナルを送る
+        (interrupt-process the-process)
+        (when (equal system-type 'windows-nt) ; cmd.exe は、プロセスを終了しますかで待機中
+          (process-send-string gcloud-maven-appengine-process-name "Y\n"))
+        t ))))
+
+(defun gcloud-maven-appengine-stop ()
+  "gcloud ベースの appengine を停止させる"
   (interactive)
-  (when (gcloud-maven-appengine-still-alivep)
-    (interrupt-process (get-process gcloud-maven-appengine-process-name)))
-  (when (get-process gcloud-maven-appengine-process-name)
-    (delete-process (get-process gcloud-maven-appengine-process-name)))
-  (remove-hook 'kill-emacs-hook 'gcloud-maven-appengine-stop))
+  (gcloud-maven-appengine-stop-impl nil))
 
 (defun gcloud-maven-appengine-run ()
-  ""
+  "gcloud ベースの appengine をスタートさせる"
   (interactive)
   (let ((maven-root (gcloud-maven-find-root)))
     (when maven-root
@@ -112,12 +129,17 @@
   (let ((the-project-root (gcloud-maven-find-root))
         (still-alive (gcloud-maven-appengine-still-alivep)))
     (when the-project-root
-      (let ((default-directory the-project-root))
-        (when still-alive
-          (message "stop appengine debug environment and start later")
-          (gcloud-maven-appengine-stop)
-          (add-hook 'compilation-finish-functions 'gcloud-maven--compilation-hook-for-restart))
-        (compile (mapconcat 'identity (list gcloud-maven-command-name "clean" "package") " "))))))
+        (if still-alive
+            (gcloud-maven-appengine-stop-impl
+             ((lambda (the-project-root)
+                (message "stop appengine debug environment and start later")
+                (lambda ()
+                  (add-hook 'compilation-finish-functions 'gcloud-maven--compilation-hook-for-restart)
+                  (let ((default-directory the-project-root))
+                    (compile (mapconcat 'identity (list gcloud-maven-command-name "clean" "package") " ")))))
+              the-project-root))
+          (let ((default-directory the-project-root))
+            (compile (mapconcat 'identity (list gcloud-maven-command-name "clean" "package") " ")))))))
 
 (provide 'gcloud-maven)
 ;;;
